@@ -688,7 +688,8 @@ function addSubnet() {
   const v = inp.value.trim();
   if (!v) return;
   if (!/^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$/.test(v)) { toast('Ugyldigt format — brug fx 192.168.1.0/24', 'err'); return; }
-  if (!subnets.includes(v)) { subnets.push(v); renderTags(); }
+  if (subnets.includes(v)) { toast('Subnet er allerede på listen', 'info'); return; }
+  subnets.push(v); renderTags();
   inp.value = '';
 }
 
