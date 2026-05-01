@@ -177,11 +177,10 @@ header{display:flex;align-items:center;justify-content:space-between;
 </header>
 
 <div class="notice" id="cors-notice">
-  <strong>Bemærk:</strong> Enhedsnavne og -modeller kan ikke hentes i browseren på grund af CORS-begrænsninger —
-  Sonos-enheder tillader ikke cross-origin HTTP-kald fra JavaScript.
-  Portscanning (detektering) fungerer dog fint. Klik på en enheds IP for at åbne dens web-interface direkte.
-  Bruger du <strong>Firefox</strong>? Prøv at åbne filen derfra — Firefox håndhæver ikke Private Network Access og
-  kan muligvis hente enhedsinfo automatisk.
+  <strong>Enhedsnavne kunne ikke hentes.</strong>
+  Browseren blokerede HTTP-kald til Sonos (CORS — enheder svarer ikke med <code style="font-family:monospace">Access-Control-Allow-Origin</code>).
+  Portscanning fungerer fint — klik direkte på en IP-adresse eller brug "Status"-knappen for at åbne enhedens web-interface.
+  Prøv med <strong>Firefox</strong>: Firefox håndhæver ikke Private Network Access og kan typisk hente navnene automatisk.
 </div>
 
 <div class="card scan-panel">
@@ -298,30 +297,38 @@ async function probePort(ip) {
   }
 }
 
-// ── Device info (works when CORS headers are present — Firefox / same-subnet) ─
+// ── Device info ───────────────────────────────────────────────────────────────
+// Tries two endpoints. /status/zp is the fastest for ZoneName.
+// /xml/device_description.xml gives model, serial, software version.
 async function fetchDeviceInfo(ip) {
-  try {
+  const get = async (path, ms = 3000) => {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 4000);
-    const r = await fetch(`http://${ip}:1400/xml/device_description.xml`, {
-      cache: 'no-store',
-      signal: ctrl.signal,
-    });
-    clearTimeout(tid);
-    const xml = await r.text();
-    if (!xml.includes('ZonePlayer') && !xml.toLowerCase().includes('sonos') && !xml.toLowerCase().includes('rincon'))
-      return null;
-    const g = t => (xml.match(new RegExp('<' + t + '[^>]*>([^<]+)</' + t + '>', 'i')) || ['', ''])[1].trim();
-    return {
-      name: g('friendlyName') || g('roomName') || ip,
-      model: g('modelName'),
-      modelNumber: g('modelNumber'),
-      sw: g('softwareVersion'),
-      serial: g('serialNum') || g('serialNumber'),
-    };
-  } catch {
-    return null;
-  }
+    const tid = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const r = await fetch(`http://${ip}:1400${path}`, { signal: ctrl.signal });
+      clearTimeout(tid);
+      return await r.text();
+    } catch { clearTimeout(tid); return null; }
+  };
+  const g = (xml, t) => (xml.match(new RegExp('<' + t + '[^>]*>([^<]+)</' + t + '>', 'i')) || ['',''])[1].trim();
+
+  // Fetch both in parallel
+  const [zp, desc] = await Promise.all([
+    get('/status/zp'),
+    get('/xml/device_description.xml'),
+  ]);
+  const zoneName = zp ? g(zp, 'ZoneName') : '';
+  if (!desc && !zoneName) return null;
+  if (desc && !desc.toLowerCase().includes('sonos') && !desc.includes('ZonePlayer') && !desc.toLowerCase().includes('rincon'))
+    return zoneName ? { name: zoneName } : null;
+
+  return {
+    name: zoneName || (desc ? g(desc, 'friendlyName') || g(desc, 'roomName') : '') || ip,
+    model: desc ? g(desc, 'modelName') : '',
+    modelNumber: desc ? g(desc, 'modelNumber') : '',
+    sw: desc ? g(desc, 'softwareVersion') : '',
+    serial: desc ? g(desc, 'serialNum') || g(desc, 'serialNumber') : '',
+  };
 }
 
 // ── Topology fetch (from first found device) ──────────────────────────────────
@@ -386,16 +393,24 @@ async function startScan() {
     }
   }
 
-  // If we found devices but couldn't read info, show CORS notice
+  // If we found devices but couldn't read info, try topology as last resort
   if (devices.size > 0 && !corsWorked) {
-    document.getElementById('cors-notice').classList.add('on');
-    // Try to enrich devices via topology (Sonos topology XML sometimes works around CORS)
     if (firstIP) {
       const members = await fetchTopology(firstIP);
       for (const m of members) {
         if (devices.has(m.ip) && m.name) {
+          corsWorked = true;
           updateDeviceCard(m.ip, { name: m.name });
         }
+      }
+    }
+    if (!corsWorked) {
+      // Clear "Henter navn..." from all cards
+      document.getElementById('cors-notice').classList.add('on');
+      for (const ip of devices.keys()) {
+        const safeId = 'dev-' + ip.replace(/\./g, '_');
+        const sub = document.getElementById('sub-' + safeId);
+        if (sub && sub.textContent === 'Henter navn...') { sub.textContent = ip; sub.style = ''; }
       }
     }
   }
@@ -445,13 +460,13 @@ function addDeviceCard(ip, info) {
       '<div class="dicon" id="ico-' + safeId + '">🔈</div>' +
       '<div class="dname">' +
         '<h3 id="nm-' + safeId + '">' + esc(ip) + '</h3>' +
-        '<p id="sub-' + safeId + '">Portscanning fundet</p>' +
+        '<p id="sub-' + safeId + '" style="color:var(--t3);font-style:italic">Henter navn...</p>' +
       '</div>' +
     '</div>' +
-    '<div class="dmeta">' +
+    '<div class="dmeta" id="meta-' + safeId + '">' +
       '<div class="mitem"><div class="mlabel">IP-adresse</div>' +
         '<div class="mval mono"><a href="http://' + ip + ':1400" target="_blank" style="color:var(--accent)">' + esc(ip) + '</a></div></div>' +
-      '<div class="mitem" id="mdl-' + safeId + '"><div class="mlabel">Model</div><div class="mval">—</div></div>' +
+      '<div class="mitem" id="mdl-' + safeId + '"><div class="mlabel">Model</div><div class="mval" style="color:var(--t3)">—</div></div>' +
     '</div>' +
     '<div class="dact">' +
       '<a class="btn btn-ghost btn-sm" href="http://' + ip + ':1400/status" target="_blank">Status</a>' +
@@ -470,17 +485,42 @@ function updateDeviceCard(ip, info) {
   devices.set(ip, merged);
 
   const safeId = 'dev-' + ip.replace(/\./g, '_');
-  const nm = document.getElementById('nm-' + safeId);
-  const sub = document.getElementById('sub-' + safeId);
-  const ico = document.getElementById('ico-' + safeId);
-  const mdl = document.getElementById('mdl-' + safeId);
+  const nm  = document.getElementById('nm-'   + safeId);
+  const sub = document.getElementById('sub-'  + safeId);
+  const ico = document.getElementById('ico-'  + safeId);
+  const mdl = document.getElementById('mdl-'  + safeId);
+  const meta = document.getElementById('meta-' + safeId);
 
-  if (nm && merged.name && merged.name !== ip) nm.textContent = merged.name;
-  if (sub && merged.model) sub.textContent = [merged.model, merged.modelNumber].filter(Boolean).join(' ');
+  if (nm && merged.name && merged.name !== ip) {
+    nm.textContent = merged.name;
+    nm.style.color = '';
+  }
+  if (sub) {
+    const modelStr = [merged.model, merged.modelNumber].filter(Boolean).join(' ');
+    if (modelStr) { sub.textContent = modelStr; sub.style = ''; }
+    else if (merged.name && merged.name !== ip) { sub.textContent = ip; sub.style = ''; }
+    else sub.textContent = 'Henter navn...';
+  }
   if (ico && merged.model) ico.textContent = modelIcon(merged.model);
   if (mdl) {
-    const modelStr = [merged.model, merged.modelNumber].filter(Boolean).join(' ') || '—';
-    mdl.innerHTML = '<div class="mlabel">Model</div><div class="mval">' + esc(modelStr) + '</div>';
+    const modelStr = [merged.model, merged.modelNumber].filter(Boolean).join(' ');
+    mdl.innerHTML = '<div class="mlabel">Model</div><div class="mval">' + esc(modelStr || '—') + '</div>';
+  }
+  // Add SW version and serial to meta grid if available (only first time)
+  if (meta && !meta.dataset.enriched && (merged.sw || merged.serial)) {
+    meta.dataset.enriched = '1';
+    if (merged.sw) {
+      const el = document.createElement('div');
+      el.className = 'mitem';
+      el.innerHTML = '<div class="mlabel">Software</div><div class="mval mono">' + esc(merged.sw) + '</div>';
+      meta.appendChild(el);
+    }
+    if (merged.serial) {
+      const el = document.createElement('div');
+      el.className = 'mitem';
+      el.innerHTML = '<div class="mlabel">Serienr.</div><div class="mval mono" style="font-size:10px">' + esc(merged.serial) + '</div>';
+      meta.appendChild(el);
+    }
   }
 }
 
