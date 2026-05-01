@@ -40,11 +40,19 @@ function ssdpDiscover(timeoutMs = 5000) {
 }
 
 // ── IP Range Scanner ──────────────────────────────────────────────────────────
-function expandSubnet(cidr) {
-  const [base, bits] = cidr.trim().split('/');
+function expandSubnet(entry) {
+  entry = entry.trim();
+  // Single IP — no slash
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(entry)) {
+    const p = entry.split('.').map(Number);
+    if (p.some(x => isNaN(x) || x < 0 || x > 255))
+      throw new Error(`Ugyldig IP: ${entry}`);
+    return [entry];
+  }
+  const [base, bits] = entry.split('/');
   const prefixLen = parseInt(bits, 10);
   if (isNaN(prefixLen) || prefixLen < 16 || prefixLen > 30)
-    throw new Error(`Ugyldigt subnet (tilladt /16–/30): ${cidr}`);
+    throw new Error(`Ugyldigt subnet (tilladt /16–/30): ${entry}`);
   const parts = base.split('.').map(Number);
   if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255))
     throw new Error(`Ugyldig IP: ${base}`);
@@ -589,7 +597,7 @@ header{display:flex;align-items:center;justify-content:space-between;
     <span class="row-label">Subnets</span>
     <div class="tags" id="tags"></div>
     <div class="add-sub">
-      <input type="text" id="sub-inp" placeholder="10.0.0.0/24" />
+      <input type="text" id="sub-inp" placeholder="192.168.1.0/24 eller enkelt IP" />
       <button class="btn btn-ghost btn-sm" onclick="addSubnet()">+ Tilføj</button>
     </div>
   </div>
@@ -687,8 +695,10 @@ function addSubnet() {
   const inp = document.getElementById('sub-inp');
   const v = inp.value.trim();
   if (!v) return;
-  if (!/^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$/.test(v)) { toast('Ugyldigt format — brug fx 192.168.1.0/24', 'err'); return; }
-  if (subnets.includes(v)) { toast('Subnet er allerede på listen', 'info'); return; }
+  const isSingleIP = /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(v);
+  const isCIDR = /^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$/.test(v);
+  if (!isSingleIP && !isCIDR) { toast('Ugyldigt format — brug f.eks. 192.168.1.0/24 eller 192.168.1.100', 'err'); return; }
+  if (subnets.includes(v)) { toast(v + ' er allerede på listen', 'info'); return; }
   subnets.push(v); renderTags();
   inp.value = '';
 }
